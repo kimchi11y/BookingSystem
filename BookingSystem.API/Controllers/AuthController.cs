@@ -1,9 +1,13 @@
-﻿using BookingSystem.API.DataTransferObjects;
+﻿using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
+using BookingSystem.API.DataTransferObjects;
 using BookingSystem.Entities.DbContext;
 using BookingSystem.Entities.Model;
 using Mapster;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.IdentityModel.Tokens;
 
 namespace BookingSystem.API.Controllers;
 
@@ -15,32 +19,55 @@ public class AuthController:ControllerBase
     private readonly BookingSystemDbContext _context;
     private readonly UserManager<ApplicationUser> _userManager;
     private readonly SignInManager<ApplicationUser> _signInManager;
-    public AuthController(ILogger<AuthController> logger, BookingSystemDbContext context, UserManager<ApplicationUser> userManager, SignInManager<ApplicationUser> signInManager)
+    private readonly IConfiguration _configuration;
+
+    public AuthController(ILogger<AuthController> logger, BookingSystemDbContext context, UserManager<ApplicationUser> userManager, SignInManager<ApplicationUser> signInManager, IConfiguration configuration)
     {
         _logger = logger;
         _context = context;
         _userManager = userManager;
         _signInManager = signInManager;
+        _configuration = configuration;
     }
-    
-    [HttpPost("login")]
+    [HttpPost]
+    [Route("login")]
     public async Task<IActionResult> Login([FromBody] LoginDto loginDto)
     {
         var user = await _userManager.FindByEmailAsync(loginDto.Email);
-        if (user == null)
+        if (user != null && await _userManager.CheckPasswordAsync(user, loginDto.Password))
         {
-            return BadRequest("User not found");
+            var userRoles = await _userManager.GetRolesAsync(user);
+            var authClaims = new List<Claim>
+            {
+                new Claim(ClaimTypes.Name, user.UserName),
+                new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+            };
+            foreach (var userRole in userRoles)
+            {
+                authClaims.Add(new Claim(ClaimTypes.Role, userRole));
+            }
+            var token = GetToken(authClaims);
+            return Ok(new
+            {
+                token = new JwtSecurityTokenHandler().WriteToken(token),
+                expiration = token.ValidTo
+            });
         }
-        
-        var result = await _signInManager.CheckPasswordSignInAsync(user, loginDto.Password,false);
-        if (!result.Succeeded)
-        {
-            return BadRequest("Password is incorrect");
-        }
-        
-        var token = await _userManager.GenerateUserTokenAsync(user, "BookingSystem", "access_token");
-        return Ok(new {token, UserDto = user.Adapt<UserDto>()});
+        return Unauthorized();
     }
+    private JwtSecurityToken GetToken(List<Claim> authClaims)
+    {
+        var authSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["JWT:Secret"]));
+        var token = new JwtSecurityToken(
+            issuer: _configuration["JWT:ValidIssuer"],
+            audience: _configuration["JWT:ValidAudience"],
+            expires: DateTime.Now.AddHours(1),
+            claims: authClaims,
+            signingCredentials: new SigningCredentials(authSigningKey, SecurityAlgorithms.HmacSha256)
+        );
+        return token;
+    }
+
     
     [HttpPost("logout")]
     public async Task<IActionResult> Logout()
