@@ -59,6 +59,10 @@ public class BookingsController : ControllerBase
             return NotFound();
         }
         booking.Status = Booking.BookingStatus.Cancelled;
+        
+        var timeslot = await _context.TimeSlots.FindAsync(booking.TimeSlotId);
+        timeslot.Status = TimeSlot.TimeSlotStatus.Available;
+        
         await _context.SaveChangesAsync();
         var bookingDto = booking.Adapt<BookingDto>();
         return Ok(bookingDto);
